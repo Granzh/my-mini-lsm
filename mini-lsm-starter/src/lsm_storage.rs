@@ -30,11 +30,13 @@ use crate::compact::{
     CompactionController, CompactionOptions, LeveledCompactionController, LeveledCompactionOptions,
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
+use crate::iterators::StorageIterator;
+use crate::key::KeySlice;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::mem_table::MemTable;
 use crate::mvcc::LsmMvccInner;
-use crate::table::SsTable;
+use crate::table::{SsTable, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -300,15 +302,20 @@ impl LsmStorageInner {
     pub fn get(&self, _key: &[u8]) -> Result<Option<Bytes>> {
         let state = self.state.read().clone();
 
-        let process_value = |val: Bytes| -> Option<Bytes> {
-            if val.is_empty() {
-                None
-            } else {
-                Some(val)
-            }
-        };
+        let process_value =
+            |val: Bytes| -> Option<Bytes> { if val.is_empty() { None } else { Some(val) } };
 
-        Ok(process_value(Bytes::from(_key.to_vec())))
+        if let Some(val) = state.memtable.get(_key) {
+            return Ok(process_value(val));
+        }
+
+        for imm in &state.imm_memtables {
+            if let Some(val) = imm.get(_key) {
+                return Ok(process_value(val));
+            }
+        }
+
+        Ok(None)
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
@@ -318,8 +325,24 @@ impl LsmStorageInner {
 
     /// Put a key-value pair into the storage by writing into the current memtable.
     pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
-        let state = self.state.read();
-        state.memtable.put(_key, _value)
+        let size;
+
+        {
+            let state = self.state.read();
+            state.memtable.put(_key, _value)?;
+            size = state.memtable.approximate_size();
+        }
+
+        if size >= self.options.target_sst_size {
+            let state_lock = self.state_lock.lock();
+            let state = self.state.read();
+
+            if state.memtable.approximate_size() >= self.options.target_sst_size {
+                self.force_freeze_memtable(&state_lock)?;
+            }
+        }
+
+        Ok(())
     }
 
     /// Remove a key from the storage by writing an empty value.
@@ -349,7 +372,22 @@ impl LsmStorageInner {
 
     /// Force freeze the current memtable to an immutable memtable
     pub fn force_freeze_memtable(&self, _state_lock_observer: &MutexGuard<'_, ()>) -> Result<()> {
-        unimplemented!()
+        let mut state_guard = self.state.write();
+
+        let mut state = state_guard.as_ref().clone();
+
+        let next_id = self
+            .next_sst_id
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        let old_memtable =
+            std::mem::replace(&mut state.memtable, Arc::new(MemTable::create(next_id)));
+
+        state.imm_memtables.insert(0, old_memtable);
+
+        *state_guard = Arc::new(state);
+
+        Ok(())
     }
 
     /// Force flush the earliest-created immutable memtable to disk

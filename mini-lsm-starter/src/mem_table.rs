@@ -53,7 +53,12 @@ pub(crate) fn map_bound(bound: Bound<&[u8]>) -> Bound<Bytes> {
 impl MemTable {
     /// Create a new mem-table.
     pub fn create(_id: usize) -> Self {
-        unimplemented!()
+        Self {
+            map: Arc::new(SkipMap::new()),
+            wal: None,
+            id: _id,
+            approximate_size: Arc::new(AtomicUsize::default()),
+        }
     }
 
     /// Create a new mem-table with WAL
@@ -97,7 +102,8 @@ impl MemTable {
     /// In week 2, day 6, also flush the data to WAL.
     /// In week 3, day 5, route this through the batch WAL implementation.
     pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
-        self.map.insert(Bytes::from(_key.to_vec()), Bytes::from(_value.to_vec()));
+        self.map
+            .insert(Bytes::from(_key.to_vec()), Bytes::from(_value.to_vec()));
         Ok(())
     }
 
