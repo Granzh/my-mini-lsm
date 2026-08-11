@@ -87,7 +87,8 @@ impl MemTable {
 
     /// Get a value by key.
     pub fn get(&self, _key: &[u8]) -> Option<Bytes> {
-        unimplemented!()
+        let entry = self.map.get(_key)?;
+        Some(entry.value().clone())
     }
 
     /// Put a key-value pair into the mem-table.
@@ -96,7 +97,8 @@ impl MemTable {
     /// In week 2, day 6, also flush the data to WAL.
     /// In week 3, day 5, route this through the batch WAL implementation.
     pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
-        unimplemented!()
+        self.map.insert(Bytes::from(_key.to_vec()), Bytes::from(_value.to_vec()));
+        Ok(())
     }
 
     /// Implement this in week 3, day 5.
