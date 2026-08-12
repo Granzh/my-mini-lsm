@@ -30,13 +30,11 @@ use crate::compact::{
     CompactionController, CompactionOptions, LeveledCompactionController, LeveledCompactionOptions,
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
-use crate::iterators::StorageIterator;
-use crate::key::KeySlice;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::mem_table::MemTable;
 use crate::mvcc::LsmMvccInner;
-use crate::table::{SsTable, SsTableIterator};
+use crate::table::SsTable;
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -325,19 +323,17 @@ impl LsmStorageInner {
 
     /// Put a key-value pair into the storage by writing into the current memtable.
     pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
-        let size;
-
-        {
+        let size = {
             let state = self.state.read();
             state.memtable.put(_key, _value)?;
-            size = state.memtable.approximate_size();
-        }
+            state.memtable.approximate_size()
+        };
 
         if size >= self.options.target_sst_size {
             let state_lock = self.state_lock.lock();
-            let state = self.state.read();
 
-            if state.memtable.approximate_size() >= self.options.target_sst_size {
+            let current_size = self.state.read().memtable.approximate_size();
+            if current_size >= self.options.target_sst_size {
                 self.force_freeze_memtable(&state_lock)?;
             }
         }
@@ -372,21 +368,16 @@ impl LsmStorageInner {
 
     /// Force freeze the current memtable to an immutable memtable
     pub fn force_freeze_memtable(&self, _state_lock_observer: &MutexGuard<'_, ()>) -> Result<()> {
-        let mut state_guard = self.state.write();
+        let id = self.next_sst_id();
+        let memtable = Arc::new(MemTable::create(id));
+        {
+            let mut guard = self.state.write();
+            let mut snapshot = guard.as_ref().clone();
 
-        let mut state = state_guard.as_ref().clone();
-
-        let next_id = self
-            .next_sst_id
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-
-        let old_memtable =
-            std::mem::replace(&mut state.memtable, Arc::new(MemTable::create(next_id)));
-
-        state.imm_memtables.insert(0, old_memtable);
-
-        *state_guard = Arc::new(state);
-
+            let old_memtable = std::mem::replace(&mut snapshot.memtable, memtable);
+            snapshot.imm_memtables.insert(0, old_memtable);
+            *guard = Arc::new(snapshot);
+        }
         Ok(())
     }
 

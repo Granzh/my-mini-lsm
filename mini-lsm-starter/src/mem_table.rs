@@ -102,8 +102,14 @@ impl MemTable {
     /// In week 2, day 6, also flush the data to WAL.
     /// In week 3, day 5, route this through the batch WAL implementation.
     pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
+        let estimated_size = _key.len() + _value.len();
+
         self.map
             .insert(Bytes::from(_key.to_vec()), Bytes::from(_value.to_vec()));
+
+        self.approximate_size
+            .fetch_add(estimated_size, std::sync::atomic::Ordering::Relaxed);
+
         Ok(())
     }
 
